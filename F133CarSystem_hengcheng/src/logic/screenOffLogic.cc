@@ -27,7 +27,7 @@
 *mListView1Ptr->refreshListView() 让mListView1 重新刷新，当列表数据变化后调用
 *mDashbroadView1Ptr->setTargetAngle(120) 在控件mDashbroadView1上指针显示角度调整到120度
 *
-* 在Eclipse编辑器中  使用 “alt + /”  快捷键可以打开智能提示
+* 在Eclipse编辑器中  使用 "alt + /"  快捷键可以打开智能提示
 */
 
 #include "utils/BrightnessHelper.h"
@@ -60,14 +60,15 @@ static void set_back_pic() {
 	BitmapHelper::loadBitmapFromFile(bg_bmp, CONFIGMANAGER->getResFilePath("status/time.jpg").c_str(), 3);
 	mTextBgPtr->setBackgroundBmp(bg_bmp);
 }
+
 /**
  * 注册定时器
  * 填充数组用于注册定时器
  * 注意：id不能重复
  */
 static S_ACTIVITY_TIMEER REGISTER_ACTIVITY_TIMER_TAB[] = {
-	{0,  1000}, //定时器id=0, 时间间隔6秒
-	//{1,  1000},
+	{0,  1000}, //定时器id=0, 时间间隔1秒
+	{1,  300},  //定时器id=1, 延迟300ms显示控件
 };
 
 /**
@@ -91,13 +92,18 @@ static void onUI_intent(const Intent *intentPtr) {
  * 当界面显示时触发
  */
 static void onUI_show() {
-	set_back_pic();
-//	mTextBgPtr->setBackgroundPic("/status/time.jpg");
+	// 先隐藏指针和中心文本控件
+	mPointMinutePtr->setVisible(false);
+	mPointSecondPtr->setVisible(false);
+	mPointHourPtr->setVisible(false);
+	mTextCenterPtr->setVisible(false);
+
 	mode::set_switch_mode(E_SWITCH_MODE_NULL);
-//	if (app::is_show_topbar()) {
 	app::hide_topbar();
 	sys::setting::set_reverse_topbar_show(false);
-//	}
+
+	// 启动300ms延迟定时器 - 使用正确的定时器注册方法
+	mActivityPtr->registerUserTimer(1, 300);
 }
 
 /*
@@ -109,6 +115,8 @@ static void onUI_hide() {
 		app::show_topbar();
 	}
 	mTextBgPtr->setBackgroundBmp(NULL);
+	// 停止定时器 - 使用正确的定时器注销方法
+	mActivityPtr->unregisterUserTimer(1);
 }
 
 /*
@@ -148,8 +156,17 @@ static bool onUI_Timer(int id){
 		set_time(*TimeHelper::getDateTime());
 		break;
 	}
-		default:
-			break;
+	case 1:{
+		// 300ms延迟后显示背景图片和控件
+		set_back_pic();
+		mPointMinutePtr->setVisible(true);
+		mPointSecondPtr->setVisible(true);
+		mPointHourPtr->setVisible(true);
+		mTextCenterPtr->setVisible(true);
+		return false;  // 停止定时器1，因为只需要执行一次
+	}
+	default:
+		break;
 	}
     return true;
 }

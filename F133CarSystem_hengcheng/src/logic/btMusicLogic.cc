@@ -27,7 +27,7 @@
 *mListView1Ptr->refreshListView() 让mListView1 重新刷新，当列表数据变化后调用
 *mDashbroadView1Ptr->setTargetAngle(120) 在控件mDashbroadView1上指针显示角度调整到120度
 *
-* 在Eclipse编辑器中  使用 “alt + /”  快捷键可以打开智能提示
+* 在Eclipse编辑器中  使用 "alt + /"  快捷键可以打开智能提示
 */
 
 #include "bt/context.h"
@@ -36,6 +36,7 @@
 #include "utils/BitmapHelper.h"
 #include "manager/ConfigManager.h"
 #include "mode_observer.h"
+#include "media/audio_context.h"  // 添加音频上下文头文件
 
 static bt_cb_t _s_bt_cb;
 
@@ -103,6 +104,11 @@ static void onUI_init(){
     //Tips :添加 UI初始化的显示代码到这里,如:mText1Ptr->setText("123");
 	LOGD("[btMusic] onUI_init");
 	_bt_add_cb();
+
+	// 确保音源切换到蓝牙音乐
+	LOGD("[btMusic] Switch audio to BT_MUSIC");
+	audio::change_audio_type(E_AUDIO_TYPE_BT_MUSIC);
+
 	if (bt::music_is_playing()) {
 		sys::setting::set_music_play_dev(E_AUDIO_TYPE_BT_MUSIC);
 	}
@@ -129,6 +135,31 @@ static void onUI_intent(const Intent *intentPtr) {
  */
 static void onUI_show() {
 	mode::set_switch_mode(E_SWITCH_MODE_NULL);
+
+	// 每次显示时都确保音源状态正确
+	LOGD("[btMusic] onUI_show - ensure BT_MUSIC audio source");
+	audio::change_audio_type(E_AUDIO_TYPE_BT_MUSIC);
+
+	// 通过轻微调节音量强制重置音频系统状态
+	LOGD("[btMusic] Reset audio system by volume adjustment");
+	float current_vol = audio::get_system_vol();
+	float temp_vol = current_vol + 0.01f;  // 增加一点音量
+	if (temp_vol > 1.0f) {
+		temp_vol = current_vol - 0.01f;  // 如果超出范围就减少
+	}
+	audio::set_system_vol(temp_vol, true);   // 先调整
+	DELAY(50);  // 等待生效
+	audio::set_system_vol(current_vol, true); // 恢复原音量
+	DELAY(50);  // 等待生效
+
+	// 如果蓝牙音乐正在播放但UI状态不对，修正UI状态
+	if (bt::music_is_playing()) {
+		mplayButtonPtr->setSelected(true);
+		mtittleTextViewPtr->setTextColor(0xFF00FCFF);
+		sys::setting::set_music_play_dev(E_AUDIO_TYPE_BT_MUSIC);
+		_update_music_info();
+		_update_music_progress();
+	}
 }
 
 /*
@@ -212,9 +243,17 @@ static bool onButtonClick_nextButton(ZKButton *pButton) {
 
 static bool onButtonClick_playButton(ZKButton *pButton) {
     LOGD(" ButtonClick playButton !!!\n");
+
+    // 确保音源是蓝牙音乐
+    if (audio::get_audio_type() != E_AUDIO_TYPE_BT_MUSIC) {
+        LOGD("[btMusic] Switch audio to BT_MUSIC before play");
+        audio::change_audio_type(E_AUDIO_TYPE_BT_MUSIC);
+    }
+
     bt::music_is_playing() ? bt::music_pause() : bt::music_play();
     return false;
 }
+
 static bool onButtonClick_queryMusicButton(ZKButton *pButton) {
     LOGD(" ButtonClick queryMusicButton !!!\n");
     EASYUICONTEXT->closeActivity("btContactsActivity");

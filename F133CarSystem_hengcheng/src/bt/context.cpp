@@ -507,8 +507,8 @@ static void _proc_hangup(const char *data, int len) {
 	// 结束通话状态——>音量恢复
 	if (_s_bt_info.calling) { audio::handle_phone(E_AUDIO_TYPE_BT_PHONE, false); }
 	_s_bt_info.calling = false;
-	DELAY(500);
-//  新增：通话结束后恢复蓝牙音乐
+	DELAY(150);
+//  通话结束后恢复蓝牙音乐
 	// if (_s_bt_info.music_playing) {
 	// 	set_bt_mute(false, false);                    // 解除静音
 	// 	audio::change_audio_type(E_AUDIO_TYPE_BT_MUSIC); // 切换音频源

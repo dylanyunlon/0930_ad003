@@ -4,6 +4,7 @@
 #include "mainActivity.h"
 
 /*TAG:GlobalVariable全局变量*/
+static ZKTextView* mmusicPicTextViewPtr;
 static ZKButton* msettingPage2ButtonPtr;
 static ZKButton* malbumPage2ButtonPtr;
 static ZKButton* mvideoPage2ButtonPtr;
@@ -43,7 +44,6 @@ static ZKWindow* mbtTipsWindowPtr;
 static ZKTextView* martistTextViewPtr;
 static ZKTextView* mTextView1Ptr;
 static ZKButton* mToMusicPtr;
-static ZKTextView* mmusicPicTextViewPtr;
 static ZKSeekBar* mPlayProgressSeekbarPtr;
 static ZKTextView* mTextView2Ptr;
 static ZKButton* mPrevButtonPtr;
@@ -197,6 +197,7 @@ mainActivity::~mainActivity() {
     unregisterProtocolDataUpdateListener(onProtocolDataUpdate);
     onUI_quit();
     mActivityPtr = NULL;
+    mmusicPicTextViewPtr = NULL;
     msettingPage2ButtonPtr = NULL;
     malbumPage2ButtonPtr = NULL;
     mvideoPage2ButtonPtr = NULL;
@@ -236,7 +237,6 @@ mainActivity::~mainActivity() {
     martistTextViewPtr = NULL;
     mTextView1Ptr = NULL;
     mToMusicPtr = NULL;
-    mmusicPicTextViewPtr = NULL;
     mPlayProgressSeekbarPtr = NULL;
     mTextView2Ptr = NULL;
     mPrevButtonPtr = NULL;
@@ -254,6 +254,7 @@ const char* mainActivity::getAppName() const{
 //TAG:onCreate
 void mainActivity::onCreate() {
 	Activity::onCreate();
+    mmusicPicTextViewPtr = (ZKTextView*)findControlByID(ID_MAIN_musicPicTextView);
     msettingPage2ButtonPtr = (ZKButton*)findControlByID(ID_MAIN_settingPage2Button);
     malbumPage2ButtonPtr = (ZKButton*)findControlByID(ID_MAIN_albumPage2Button);
     mvideoPage2ButtonPtr = (ZKButton*)findControlByID(ID_MAIN_videoPage2Button);
@@ -295,7 +296,6 @@ void mainActivity::onCreate() {
     martistTextViewPtr = (ZKTextView*)findControlByID(ID_MAIN_artistTextView);
     mTextView1Ptr = (ZKTextView*)findControlByID(ID_MAIN_TextView1);
     mToMusicPtr = (ZKButton*)findControlByID(ID_MAIN_ToMusic);
-    mmusicPicTextViewPtr = (ZKTextView*)findControlByID(ID_MAIN_musicPicTextView);
     mPlayProgressSeekbarPtr = (ZKSeekBar*)findControlByID(ID_MAIN_PlayProgressSeekbar);if(mPlayProgressSeekbarPtr!= NULL){mPlayProgressSeekbarPtr->setSeekBarChangeListener(this);}
     mTextView2Ptr = (ZKTextView*)findControlByID(ID_MAIN_TextView2);
     mPrevButtonPtr = (ZKButton*)findControlByID(ID_MAIN_PrevButton);

@@ -62,6 +62,7 @@ typedef enum {
 } music_enter_type_e;
 
 static music_enter_type_e enter_type = E_ENTER_FROM_APP;
+static music_enter_type_e original_enter_type = E_ENTER_FROM_APP;  // 新增：保存原始进入方式
 
 namespace {
 class SeekbarChangeListener: public ZKSeekBar::ISeekBarChangeListener {
@@ -234,7 +235,8 @@ static void _event_mode_cb(event_mode_e mode) {
 			// 音乐窗口没有显示，当前在列表界面
 			if (is_back) {
 				mmusicWindowPtr->showWnd();
-				enter_type = E_ENTER_FROM_LIST;  // 标记为从列表进入
+				// 修复：恢复原始进入方式，而不是强制设置为E_ENTER_FROM_LIST
+				enter_type = original_enter_type;
 				mode::set_switch_mode(E_SWITCH_MODE_GOBACK);
 				is_back = false;
 			} else {
@@ -294,10 +296,13 @@ static void onUI_show() {
 
 		// 如果音乐正在播放，说明是从主应用界面进入的
 		enter_type = E_ENTER_FROM_APP;
+		original_enter_type = E_ENTER_FROM_APP;  // 同时设置原始进入方式
 		mode::set_switch_mode(E_SWITCH_MODE_NULL);  // 直接返回主应用界面
 	} else {
 		seek_to_current_play();
 		// 此时还在列表界面，没有进入音乐播放窗口
+		enter_type = E_ENTER_FROM_APP;  // 默认为从主应用进入
+		original_enter_type = E_ENTER_FROM_APP;
 		mode::set_switch_mode(E_SWITCH_MODE_GOBACK);
 	}
 }
@@ -352,6 +357,9 @@ static bool onUI_Timer(int id){
             mtitleTextViewPtr->setTextColor(0xFFFFFF);
         }
         if (curPos >= 0) {
+//            char timeStr[10];
+//            snprintf(timeStr, sizeof(timeStr), "%02d:%02d", curPos / 60, curPos % 60);
+//            mCurPosTextViewPtr->setText(timeStr);
             mPlayProgressSeekbarPtr->setProgress(curPos);
         }
     }
@@ -445,6 +453,9 @@ static void onListItemClick_musicListView(ZKListView *pListView, int index, int 
 //    uart::set_sound_channel(SOUND_CHANNEL_ARM);
     is_back = false;
 
+    // 保存当前的进入方式作为原始进入方式
+    original_enter_type = enter_type;
+
     // 标记为从列表进入音乐播放界面
     enter_type = E_ENTER_FROM_LIST;
 
@@ -478,6 +489,10 @@ static void onProgressChanged_PlayProgressSeekbar(ZKSeekBar *pSeekBar, int progr
 static bool onButtonClick_musicListButton(ZKButton *pButton) {
     LOGD(" ButtonClick musicListButton !!!\n");
     is_back = true;
+
+    // 保存当前的进入方式作为原始进入方式
+    original_enter_type = enter_type;
+
     seek_to_current_play();
     mmusicListViewPtr->refreshListView();
     mmusicWindowPtr->hideWnd();

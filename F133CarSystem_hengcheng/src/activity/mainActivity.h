@@ -28,6 +28,7 @@
 #include "window/ZKSlideWindow.h"
 
 /*TAG:Macro宏ID*/
+#define ID_MAIN_musicPicTextView    50004
 #define ID_MAIN_settingPage2Button    20020
 #define ID_MAIN_albumPage2Button    20019
 #define ID_MAIN_videoPage2Button    20018
@@ -71,7 +72,6 @@
 #define ID_MAIN_artistTextView    50015
 #define ID_MAIN_TextView1    50002
 #define ID_MAIN_ToMusic    20021
-#define ID_MAIN_musicPicTextView    50004
 #define ID_MAIN_PlayProgressSeekbar    91002
 #define ID_MAIN_TextView2    50003
 #define ID_MAIN_PrevButton    20023

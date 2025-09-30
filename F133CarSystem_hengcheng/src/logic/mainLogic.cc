@@ -61,6 +61,7 @@
 
 #define QUERY_LINK_AUTH_TIMER	3
 #define SWITCH_ADB_TIMER	4
+#define BT_MUSIC_ID3		5
 #define MUSIC_ERROR_TIMER	20
 
 static bt_cb_t _s_bt_cb;
@@ -70,6 +71,15 @@ static bool _s_need_reopen_linkview;
 static int _current_page_index = 0;  // 当前页面索引
 static bool _is_in_sub_pages = false; // 是否在子页面中
 
+// **内存优化：添加状态管理变量**
+static bool _is_in_reverse_mode = false;      // 倒车状态
+static bool _is_ui_update_paused = false;     // UI更新暂停状态
+static bool _is_music_info_cached = false;    // 音乐信息缓存状态
+static std::string _cached_title = "";        // 缓存的音乐标题
+static std::string _cached_artist = "";       // 缓存的艺术家信息
+static std::string _last_play_file = "";      // 上次播放的文件
+static bool _background_resources_loaded = false; // 背景资源加载状态
+static bool _is_exiting_reverse = false;      // 新增：标记是否正在从倒车模式退出
 
 static void init_default_language() {
     std::string current_code = LANGUAGEMANAGER->getCurrentCode();
@@ -192,79 +202,288 @@ static void _lylink_callback(LYLINKAPI_EVENT evt, int para0, void *para1) {
 	}
 }
 
-static void _reverse_status_cb(int status) {
-	LOGD("reverse status %d\n", status);
-	base::runInUiThreadUniqueDelayed("rear_view_detection", [](){
-		int status = sys::reverse_does_enter_status();
-		LOGD("[main] reverse_status %d\n", status);
-		if (status == REVERSE_STATUS_ENTER) {
-			EASYUICONTEXT->openActivity("reverseActivity");
-		} else {
-			EASYUICONTEXT->closeActivity("reverseActivity");
-			if (_s_need_reopen_linkview) {
-				_s_need_reopen_linkview = false;
-				if (lk::is_connected()) {
-					EASYUICONTEXT->openActivity("lylinkviewActivity");
-				}
-			}
-		}
+// **内存优化：优化背景资源清理函数**
+static void cleanup_background_resources() {
+    if (_background_resources_loaded) {
+        LOGD("[main] Cleaning up background resources");
 
-	}, 500);
+        if (mTextViewBgPtr) {
+            mTextViewBgPtr->setBackgroundBmp(NULL);
+        }
+        if (mPageWindow1Ptr) {
+            mPageWindow1Ptr->setBackgroundBmp(NULL);
+        }
+
+        _background_resources_loaded = false;
+    }
 }
 
-//static void parser() {
-//	std::string cur_play_file = media::music_get_current_play_file();
-//	id3_info_t info;
-//	memset(&info, 0, sizeof(id3_info_t));
-//	bool isTrue = media::parse_id3_info(cur_play_file.c_str(), &info);
-//	if (isTrue && strcmp(info.title, "") != 0) {
-//		mtitleTextViewPtr->setText(info.title);
-//	} else if(isTrue && strcmp(fy::files::get_file_name(cur_play_file), "") != 0) {
-//		mtitleTextViewPtr->setText(fy::files::get_file_name(cur_play_file));
-//	}else{
-//		mtitleTextViewPtr->setTextTr("Unknown");
-//	}
-//	if (isTrue) {
-//		(strcmp(info.artist, "") == 0) ? martistTextViewPtr->setTextTr("Unknown") : martistTextViewPtr->setText(info.artist);
-//	} else {
-//		martistTextViewPtr->setTextTr("Unknown");
-//	}
-//	isTrue = media::parse_id3_pic(cur_play_file.c_str(), "/tmp/music.jpg");
-//	mmusicPicTextViewPtr->setBackgroundPic(NULL);
-//	mmusicPicTextViewPtr->setBackgroundPic(isTrue ? "/tmp/music.jpg" : CONFIGMANAGER->getResFilePath("/HomePage/icon_media_cover_n.png").c_str());
-//	martistTextViewPtr->setLongMode(ZKTextView::E_LONG_MODE_SCROLL_CIRCULAR);
+static void set_back_pic() {
+	// **内存优化：避免重复加载背景资源**
+	if (_background_resources_loaded) {
+		return;
+	}
+
+	bitmap_t *bg_bmp = NULL;
+	bitmap_t *bg1_bmp = NULL;
+	BitmapHelper::loadBitmapFromFile(bg_bmp, CONFIGMANAGER->getResFilePath("/HomePage/carmain_home_wallpaper.jpg").c_str(), 3);
+	BitmapHelper::loadBitmapFromFile(bg1_bmp, CONFIGMANAGER->getResFilePath("/HomePage/car_home_wallpaper_first.jpg").c_str(), 3);
+
+	if (mTextViewBgPtr) {
+		mTextViewBgPtr->setBackgroundBmp(bg_bmp);
+	}
+	if (mPageWindow1Ptr) {
+		mPageWindow1Ptr->setBackgroundBmp(bg1_bmp);
+	}
+
+	_background_resources_loaded = true;
+}
+
+
+// **新增：倒车前窗口状态记录结构**
+struct WindowState {
+    bool window2_visible;
+    bool window3_visible;
+    bool window4_visible;
+};
+
+// **新增：添加窗口状态管理变量**
+static WindowState _reverse_backup_window_state = {false, false, false};
+static bool _has_backup_window_state = false;
+static bool _is_transitioning_from_activity = false;  // 新增：标记是否从其他Activity过渡
+
+void set_activity_transition_flag(bool flag) {
+    _is_transitioning_from_activity = flag;
+    LOGD("[main] Activity transition flag set to: %s", flag ? "true" : "false");
+}
+
+// **新增：记录当前窗口显示状态的函数**
+static void backup_current_window_state() {
+    if (mWindow2Ptr) {
+        _reverse_backup_window_state.window2_visible = mWindow2Ptr->isVisible();
+    }
+    if (mWindow3Ptr) {
+        _reverse_backup_window_state.window3_visible = mWindow3Ptr->isVisible();
+    }
+    if (mWindow4Ptr) {
+        _reverse_backup_window_state.window4_visible = mWindow4Ptr->isVisible();
+    }
+    _has_backup_window_state = true;
+
+    LOGD("[main] Backup window state - Window2: %s, Window3: %s, Window4: %s",
+         _reverse_backup_window_state.window2_visible ? "visible" : "hidden",
+         _reverse_backup_window_state.window3_visible ? "visible" : "hidden",
+         _reverse_backup_window_state.window4_visible ? "visible" : "hidden");
+}
+
+// **新增：隐藏所有窗口的函数**
+static void hide_all_windows() {
+    LOGD("[main] Hiding all windows before reverse exit");
+    if (mWindow2Ptr) {
+        mWindow2Ptr->hideWnd();
+    }
+    if (mWindow3Ptr) {
+        mWindow3Ptr->hideWnd();
+    }
+    if (mWindow4Ptr) {
+        mWindow4Ptr->hideWnd();
+    }
+}
+
+// **新增：恢复倒车前窗口状态的函数**
+static void restore_backup_window_state() {
+    if (!_has_backup_window_state) {
+        LOGD("[main] No backup window state to restore");
+        return;
+    }
+
+    LOGD("[main] Restoring backup window state - Window2: %s, Window3: %s, Window4: %s",
+         _reverse_backup_window_state.window2_visible ? "show" : "keep hidden",
+         _reverse_backup_window_state.window3_visible ? "show" : "keep hidden",
+         _reverse_backup_window_state.window4_visible ? "show" : "keep hidden");
+
+    if (_reverse_backup_window_state.window2_visible && mWindow2Ptr) {
+        mWindow2Ptr->showWnd();
+    }
+    if (_reverse_backup_window_state.window3_visible && mWindow3Ptr) {
+        mWindow3Ptr->showWnd();
+    }
+    if (_reverse_backup_window_state.window4_visible && mWindow4Ptr) {
+        mWindow4Ptr->showWnd();
+    }
+
+    // 清除备份状态
+    _has_backup_window_state = false;
+}
+
+// **修改：更新倒车状态回调函数**
+static void _reverse_status_cb(int status) {
+    LOGD("reverse status %d\n", status);
+    base::runInUiThreadUniqueDelayed("rear_view_detection", [](){
+        int status = sys::reverse_does_enter_status();
+        LOGD("[main] reverse_status %d\n", status);
+        if (status == REVERSE_STATUS_ENTER) {
+            LOGD("[main] Entering reverse mode - pausing UI updates and cleaning resources");
+            _is_in_reverse_mode = true;
+            _is_ui_update_paused = true;
+            _is_exiting_reverse = false;  // 进入倒车时清除退出标记
+
+            // 清理背景资源以释放内存
+            cleanup_background_resources();
+
+            EASYUICONTEXT->openActivity("reverseActivity");
+        } else {
+            LOGD("[main] Exiting reverse mode - will manage windows and resume UI updates after delay");
+            _is_in_reverse_mode = false;
+            _is_exiting_reverse = true;   // 标记正在从倒车模式退出
+
+            EASYUICONTEXT->closeActivity("reverseActivity");
+
+            // **新增：倒车结束时立即记录窗口状态并隐藏所有窗口**
+            backup_current_window_state();
+            hide_all_windows();
+
+            // 延迟恢复UI更新，避免内存峰值冲突
+            base::runInUiThreadUniqueDelayed("resume_ui_updates", [](){
+                _is_ui_update_paused = false;
+                // 重新启动定时器
+                _register_timer_fun(1, 20);
+
+                // 倒车结束后延迟设置背景图片
+                if (_is_exiting_reverse) {
+                    set_back_pic();
+
+                    // **新增：设置背景后恢复窗口显示状态**
+                    restore_backup_window_state();
+
+                    _is_exiting_reverse = false;  // 重置退出标记
+                }
+
+                LOGD("[main] UI updates resumed after reverse mode, background set, windows restored");
+            }, 20); // 延迟1.5秒恢复
+
+            if (_s_need_reopen_linkview) {
+                _s_need_reopen_linkview = false;
+                if (lk::is_connected()) {
+                    EASYUICONTEXT->openActivity("lylinkviewActivity");
+                }
+            }
+        }
+    }, 20);
+}
+
+//// **内存优化：修改倒车状态回调函数**
+//static void _reverse_status_cb(int status) {
+//    LOGD("reverse status %d\n", status);
+//    base::runInUiThreadUniqueDelayed("rear_view_detection", [](){
+//        int status = sys::reverse_does_enter_status();
+//        LOGD("[main] reverse_status %d\n", status);
+//        if (status == REVERSE_STATUS_ENTER) {
+//            LOGD("[main] Entering reverse mode - pausing UI updates and cleaning resources");
+//            _is_in_reverse_mode = true;
+//            _is_ui_update_paused = true;
+//            _is_exiting_reverse = false;  // 进入倒车时清除退出标记
+//
+//            // 暂停音乐进度更新定时器
+//            _unregister_timer_fun(1);
+//
+//            // 清理背景资源以释放内存
+//            cleanup_background_resources();
+//
+//            EASYUICONTEXT->openActivity("reverseActivity");
+//        } else {
+//            LOGD("[main] Exiting reverse mode - will resume UI updates after delay");
+//            _is_in_reverse_mode = false;
+//            _is_exiting_reverse = true;   // 标记正在从倒车模式退出
+//
+//            EASYUICONTEXT->closeActivity("reverseActivity");
+//
+//            // 延迟恢复UI更新，避免内存峰值冲突
+//            base::runInUiThreadUniqueDelayed("resume_ui_updates", [](){
+//                _is_ui_update_paused = false;
+//                // 重新启动定时器
+//                _register_timer_fun(1, 20);
+//
+//                // 倒车结束后延迟设置背景图片
+//                if (_is_exiting_reverse) {
+//                    set_back_pic();
+//                    _is_exiting_reverse = false;  // 重置退出标记
+//                }
+//
+//                LOGD("[main] UI updates resumed after reverse mode, background set");
+//            }, 20); // 延迟1.5秒恢复
+//
+//            if (_s_need_reopen_linkview) {
+//                _s_need_reopen_linkview = false;
+//                if (lk::is_connected()) {
+//                    EASYUICONTEXT->openActivity("lylinkviewActivity");
+//                }
+//            }
+//        }
+//    }, 20);
 //}
 
+
+// **内存优化：优化音乐信息解析（增加缓存机制）**
 static void parser() {
 	std::string cur_play_file = media::music_get_current_play_file();
+
+	// 如果文件没有改变且已缓存，直接使用缓存
+	if (cur_play_file == _last_play_file && _is_music_info_cached && !_cached_title.empty()) {
+		if (mtitleTextViewPtr) {
+			mtitleTextViewPtr->setText(_cached_title);
+		}
+		if (martistTextViewPtr) {
+			martistTextViewPtr->setText(_cached_artist);
+			martistTextViewPtr->setLongMode(ZKTextView::E_LONG_MODE_SCROLL_CIRCULAR);
+		}
+		return;
+	}
+
+	_last_play_file = cur_play_file;
+
 	id3_info_t info;
 	memset(&info, 0, sizeof(id3_info_t));
 	bool isTrue = media::parse_id3_info(cur_play_file.c_str(), &info);
 
-	// 检查title是否有效且不为空
+	// 安全的字符串处理并缓存
 	if (isTrue && info.title != nullptr && strlen(info.title) > 0) {
-		mtitleTextViewPtr->setText(info.title);
+		_cached_title = std::string(info.title);
 	} else {
-		// 获取文件名并检查是否为空
 		std::string file_name = fy::files::get_file_name(cur_play_file);
 		if (isTrue && !file_name.empty()) {
-			mtitleTextViewPtr->setText(file_name);
+			_cached_title = file_name;
 		} else {
-			mtitleTextViewPtr->setTextTr("Unknown");
+			_cached_title = "Unknown";
 		}
 	}
 
-	// 检查artist是否有效
 	if (isTrue && info.artist != nullptr && strlen(info.artist) > 0) {
-		martistTextViewPtr->setText(info.artist);
+		_cached_artist = std::string(info.artist);
 	} else {
-		martistTextViewPtr->setTextTr("Unknown");
+		_cached_artist = "Unknown";
 	}
 
-	isTrue = media::parse_id3_pic(cur_play_file.c_str(), "/tmp/music.jpg");
-	mmusicPicTextViewPtr->setBackgroundPic(NULL);
-//	mmusicPicTextViewPtr->setBackgroundPic(isTrue ? "/tmp/music.jpg" : CONFIGMANAGER->getResFilePath("/HomePage/icon_media_cover_n.png").c_str());
-	martistTextViewPtr->setLongMode(ZKTextView::E_LONG_MODE_SCROLL_CIRCULAR);
+	// 更新UI
+	if (mtitleTextViewPtr) {
+		if (_cached_title == "Unknown") {
+			mtitleTextViewPtr->setTextTr("Unknown");
+		} else {
+			mtitleTextViewPtr->setText(_cached_title);
+		}
+	}
+
+	if (martistTextViewPtr) {
+		if (_cached_artist == "Unknown") {
+			martistTextViewPtr->setTextTr("Unknown");
+		} else {
+			martistTextViewPtr->setText(_cached_artist);
+		}
+		martistTextViewPtr->setLongMode(ZKTextView::E_LONG_MODE_SCROLL_CIRCULAR);
+	}
+
+	_is_music_info_cached = true;
+
 }
 
 static void _update_music_info() {
@@ -322,7 +541,12 @@ static void _music_play_status_cb(music_play_status_e status) {
 		mtitleTextViewPtr->setTextColor(0xFFFFFFFF);
 		mtitleTextViewPtr->setTextTr("Unknown");
 		martistTextViewPtr->setTextTr("Unknown");
-//		mmusicPicTextViewPtr->setBackgroundPic("/HomePage/icon_media_cover_n.png");
+
+		// 清理缓存
+		_is_music_info_cached = false;
+		_cached_title.clear();
+		_cached_artist.clear();
+		_last_play_file.clear();
 		break;
 	case E_MUSIC_PLAY_STATUS_PAUSE:      	// 暂停播放
 		mtitleTextViewPtr->setLongMode(ZKTextView::E_LONG_MODE_NONE);
@@ -428,14 +652,6 @@ protected:
 }
 static AppSlidePageChangeListener _s_app_slide_page_change_listener;
 
-static void set_back_pic() {
-	bitmap_t *bg_bmp = NULL;
-	bitmap_t *bg1_bmp = NULL;
-	BitmapHelper::loadBitmapFromFile(bg_bmp, CONFIGMANAGER->getResFilePath("/HomePage/carmain_home_wallpaper.jpg").c_str(), 3);
-	BitmapHelper::loadBitmapFromFile(bg1_bmp, CONFIGMANAGER->getResFilePath("/HomePage/car_home_wallpaper_first.jpg").c_str(), 3);
-	mTextViewBgPtr->setBackgroundBmp(bg_bmp);
-	mPageWindow1Ptr->setBackgroundBmp(bg1_bmp);
-}
 
 static void _preload_resources() {
 	const char *pic_tab[] = {
@@ -489,64 +705,73 @@ static S_ACTIVITY_TIMEER REGISTER_ACTIVITY_TIMER_TAB[] = {
  */
 static void onUI_init() {
     //Tips :添加 UI初始化的显示代码到这里,如:mText1Ptr->setText("123");
-	// f133-B 文件系统加载慢，导致上电第一次滑动ui很慢，提前cach文件
+    // f133-B 文件系统加载慢，导致上电第一次滑动ui很慢，提前cach文件
 //	system("cp /res/font/sans.ttf /dev/null");
-	_preload_resources();
-	ctrl_UI_init();
+    _preload_resources();
+    ctrl_UI_init();
 
+    // **内存优化：初始化状态变量**
+    _is_in_reverse_mode = false;
+    _is_ui_update_paused = false;
+    _is_music_info_cached = false;
+    _background_resources_loaded = false;
+    _is_exiting_reverse = false;  // 初始化新增的状态变量
+    _cached_title.clear();
+    _cached_artist.clear();
+    _last_play_file.clear();
 
+    // 系统设置初始化
+    sys::setting::init();
+    // 打开温控线程
+    sys::hw::init();
 
-	// 系统设置初始化
-	sys::setting::init();
-	// 打开温控线程
-	sys::hw::init();
+    // 串口初始化
+    uart::init();
+    // 上电mute
+    uart::set_amplifier_mute(0);
 
-	// 串口初始化
-	uart::init();
-	// 上电mute
-	uart::set_amplifier_mute(0);
+    // 蓝牙初始化
+    bt::init();
+	mActivityPtr->registerUserTimer(BT_MUSIC_ID3, 0);
 
-	// 蓝牙初始化
-	bt::init();
+    // 网络初始化
+    net::init();
 
-	// 网络初始化
-	net::init();
+    // 媒体初始化
+    media::init();
+    media::music_add_play_status_cb(_music_play_status_cb);
 
-	// 媒体初始化
-	media::init();
-	media::music_add_play_status_cb(_music_play_status_cb);
+    // 启动手机互联
+    lk::add_lylink_callback(_lylink_callback);
+    lk::start_lylink();
 
-	// 启动手机互联
-	lk::add_lylink_callback(_lylink_callback);
-	lk::start_lylink();
+    app::attach_timer(_register_timer_fun, _unregister_timer_fun);
 
-	app::attach_timer(_register_timer_fun, _unregister_timer_fun);
+    // 启动倒车检测
+    sys::reverse_add_status_cb(_reverse_status_cb);
+    sys::reverse_detect_start();
 
-	// 启动倒车检测
-	sys::reverse_add_status_cb(_reverse_status_cb);
-	sys::reverse_detect_start();
+    _bt_add_cb();
+    bt::query_state();
 
-	_bt_add_cb();
-	bt::query_state();
-
-	media::music_add_play_status_cb(_music_play_status_cb);
-	mTextView1Ptr->setTouchPass(true);
-	martistTextViewPtr->setTouchPass(true);
+    media::music_add_play_status_cb(_music_play_status_cb);
+    mTextView1Ptr->setTouchPass(true);
+    martistTextViewPtr->setTouchPass(true);
 //	mappSlideWindowPtr->setSlidePageChangeListener(&_s_app_slide_page_change_listener);
-	mStatusRadioGroupPtr->setCheckedID(ID_MAIN_RadioButton0);
-	mpage3RadioGroupPtr->setCheckedID(ID_MAIN_RadioButton3);
-	if(bt::is_calling()){
-		bt::call_vol(audio::get_lylink_call_vol());
-	}
+    mStatusRadioGroupPtr->setCheckedID(ID_MAIN_RadioButton0);
+    mpage3RadioGroupPtr->setCheckedID(ID_MAIN_RadioButton3);
+    if(bt::is_calling()){
+        bt::call_vol(audio::get_lylink_call_vol());
+    }
 
-	base::UiHandler::implementTimerRegistration([]() {
-		mActivityPtr->registerUserTimer(base::TIMER_UI_HANDLER, 0); // @suppress("无效参数")
-	});
+    base::UiHandler::implementTimerRegistration([]() {
+        mActivityPtr->registerUserTimer(base::TIMER_UI_HANDLER, 0); // @suppress("无效参数")
+    });
 
-	// 注册页面切换监听器
-	if (mPageWindow1Ptr != NULL) {
-		mPageWindow1Ptr->setPageChangeListener(&_s_page_change_listener);
-	}
+    // 注册页面切换监听器
+    if (mPageWindow1Ptr != NULL) {
+        mPageWindow1Ptr->setPageChangeListener(&_s_page_change_listener);
+    }
 
 
 }
@@ -564,47 +789,77 @@ static void onUI_intent(const Intent *intentPtr) {
  * 当界面显示时触发
  */
 static void onUI_show() {
-	mode::set_switch_mode(E_SWITCH_MODE_NULL);
-//    if (mPageWindow1Ptr != NULL) {
-//        mPageWindow1Ptr->setCurrentPage(0);
-//    }
-	int curPos = -1;
-//	mDigitalClock2Ptr->setVisible(true);
-    set_back_pic();
-	if (sys::setting::get_music_play_dev() == E_AUDIO_TYPE_BT_MUSIC) {
-		_update_music_info();
-		_update_music_progress();
-		if (bt::music_is_playing()) {
-			mButtonPlayPtr->setSelected(true);
-		}
-	} else if (sys::setting::get_music_play_dev() == E_AUDIO_TYPE_MUSIC) {
-		parser();
-		if (media::music_is_playing()) {
-			mButtonPlayPtr->setSelected(true);
-			curPos = media::music_get_current_position() / 1000;
-			mPlayProgressSeekbarPtr->setMax(media::music_get_duration() / 1000);
-			mtitleTextViewPtr->setLongMode(ZKTextView::E_LONG_MODE_SCROLL_CIRCULAR);
-			mtitleTextViewPtr->setTextColor(0xFFFFFFFF);
-		}
-	}
-    if (curPos >= 0) {
-    	mPlayProgressSeekbarPtr->setProgress(curPos);
-    }
-	if (!app::is_show_topbar()) {
-		sys::setting::set_reverse_topbar_show(true);
-		app::show_topbar();
-	}
-	// 添加：在系统初始化早期设置默认语言为英文
-	init_default_language();
+    mode::set_switch_mode(E_SWITCH_MODE_NULL);
 
+    // **内存优化：重置状态**
+    _is_ui_update_paused = false;
+    _is_in_reverse_mode = false;
+
+    int curPos = -1;
+
+    // **新增：检查是否从其他Activity过渡回来**
+    if (_is_transitioning_from_activity) {
+        LOGD("[main] Transitioning from activity - delaying background setup");
+
+        // 先隐藏窗口
+        backup_current_window_state();
+        hide_all_windows();
+
+        // 延迟设置背景和恢复窗口
+        base::runInUiThreadUniqueDelayed("activity_transition_setup", [](){
+            set_back_pic();
+            restore_backup_window_state();
+            _is_transitioning_from_activity = false;
+            LOGD("[main] Activity transition complete, background and windows restored");
+        }, 20);
+    } else if (!_is_in_reverse_mode && !_is_exiting_reverse) {
+        // 正常情况下直接设置背景图片
+        set_back_pic();
+    }
+
+    if (sys::setting::get_music_play_dev() == E_AUDIO_TYPE_BT_MUSIC) {
+        _update_music_info();
+        _update_music_progress();
+        if (bt::music_is_playing()) {
+            mButtonPlayPtr->setSelected(true);
+        }
+    } else if (sys::setting::get_music_play_dev() == E_AUDIO_TYPE_MUSIC) {
+        parser();
+        if (media::music_is_playing()) {
+            mButtonPlayPtr->setSelected(true);
+            curPos = media::music_get_current_position() / 1000;
+            mPlayProgressSeekbarPtr->setMax(media::music_get_duration() / 1000);
+            mtitleTextViewPtr->setLongMode(ZKTextView::E_LONG_MODE_SCROLL_CIRCULAR);
+            mtitleTextViewPtr->setTextColor(0xFFFFFFFF);
+        }
+    } else {
+    }
+    if (curPos >= 0) {
+        mPlayProgressSeekbarPtr->setProgress(curPos);
+    }
+    if (!app::is_show_topbar()) {
+        sys::setting::set_reverse_topbar_show(true);
+        app::show_topbar();
+    }
+    init_default_language();
 }
 
 /*
  * 当界面隐藏时触发
  */
 static void onUI_hide() {
-	mTextViewBgPtr->setBackgroundBmp(NULL);
-	mPageWindow1Ptr->setBackgroundBmp(NULL);
+	LOGD("[main] onUI_hide - cleaning up resources");
+
+	// **内存优化：暂停UI更新**
+	_is_ui_update_paused = true;
+
+	// **内存优化：清理背景资源**
+	cleanup_background_resources();
+
+	// **内存优化：清理音乐信息缓存**
+	_is_music_info_cached = false;
+	_cached_title.clear();
+	_cached_artist.clear();
 }
 
 /*
@@ -615,8 +870,14 @@ static void onUI_quit() {
 	media::music_remove_play_status_cb(_music_play_status_cb);
 	mPlayProgressSeekbarPtr->setSeekBarChangeListener(NULL);
 //	mappSlideWindowPtr->setSlidePageChangeListener(NULL);
-	mTextViewBgPtr->setBackgroundBmp(NULL);
-	mPageWindow1Ptr->setBackgroundBmp(NULL);
+
+	// **内存优化：完全清理资源**
+	cleanup_background_resources();
+	_is_music_info_cached = false;
+	_cached_title.clear();
+	_cached_artist.clear();
+	_last_play_file.clear();
+
 	_bt_remove_cb();
 
 	// 注销页面切换监听器
@@ -651,13 +912,21 @@ static bool onUI_Timer(int id) {
 		unsigned long freeram = 0;
 		bool ret = _show_sys_info(&freeram);
 		if(ret) {
-			LOGD("-----------Current MemFree: %ldKB---------------", freeram >> 10);
+			LOGD("-----------Current MemFree: %ldKB, reverse: %s, ui_paused: %s---------------",
+				freeram >> 10,
+				_is_in_reverse_mode ? "true" : "false",
+				_is_ui_update_paused ? "true" : "false");
 		} else {
 			LOGD("-----------get MemFree info fail----------------");
 		}
 	}
 		break;
 	case 1: {
+        // **内存优化：在倒车模式或UI暂停时跳过更新**
+        if (_is_ui_update_paused || _is_in_reverse_mode) {
+            return true;
+        }
+
         int curPos = -1;
         if (sys::setting::get_music_play_dev() == E_AUDIO_TYPE_MUSIC) {
             if (media::music_is_playing()) {
@@ -667,8 +936,12 @@ static bool onUI_Timer(int id) {
             	mPlayProgressSeekbarPtr->setProgress(curPos);
             }
         }
-        // **修改位置2: 在定时器中添加时间更新调用 (新增)**
-        sys_time_(*TimeHelper::getDateTime());
+        // **内存优化：减少时间更新频率**
+        static int time_update_counter = 0;
+        if (++time_update_counter >= 3) { // 每3秒更新一次时间显示
+            time_update_counter = 0;
+            sys_time_(*TimeHelper::getDateTime());
+        }
 	}
 		break;
 	case QUERY_LINK_AUTH_TIMER:		// 查询互联授权状态
@@ -689,6 +962,11 @@ static bool onUI_Timer(int id) {
 		// unmute
 		uart::set_amplifier_mute(1);
 	}
+		return false;
+	case BT_MUSIC_ID3:
+		if (bt::music_is_playing()) {
+			bt::query_music_info();
+		}
 		return false;
 	case MUSIC_ERROR_TIMER:
 		media::music_next(true);
@@ -915,83 +1193,7 @@ static bool onButtonClick_Button2(ZKButton *pButton) {
 static void onCheckedChanged_StatusRadioGroup(ZKRadioGroup* pRadioGroup, int checkedID) {
     LOGD(" RadioGroup StatusRadioGroup checked %d", checkedID);
 }
-//static void onSlideItemClick_appSlideWindow(ZKSlideWindow *pSlideWindow, int index) {
-//    //LOGD(" onSlideItemClick_ appSlideWindow %d !!!\n", index);
-//	switch(index) {
-//	case 0:
-//	    LOGD(" ButtonClick CPButton !!!\n");
-//	    open_link_activity(E_LINK_MODE_CARPLAY);
-//		break;
-//	case 1:
-//		LOGD(" ButtonClick AAButton !!!\n");
-//		open_link_activity(E_LINK_MODE_ANDROIDAUTO);
-//		break;
-//	case 2:
-//	    LOGD(" ButtonClick APButton !!!\n");
-//	    open_link_activity(E_LINK_MODE_AIRPLAY);
-//    	break;
-//	case 3:
-//	    LOGD(" ButtonClick ACButton !!!\n");
-//	    open_link_activity(E_LINK_MODE_LYLINK);
-// 		break;
-//	case 4:
-//	    LOGD(" ButtonClick MCButton !!!\n");
-//	    open_link_activity(E_LINK_MODE_MIRACAST);
-//		break;
-//	case 5:
-//	    LOGD(" ButtonClick BtMusicButton !!!\n");
-//		if (lk::is_connected()) {
-//			mlinkTipsWindowPtr->showWnd();
-//			break;
-//		}
-//	    EASYUICONTEXT->openActivity("btsettingActivity");
-// 		break;
-//	case 6:  {
-//	    LOGD(" ButtonClick MusicButton !!!\n");
-//		if (lk::is_connected()) {
-//			mlinkTipsWindowPtr->showWnd();
-//			break;
-//		}
-//	    EASYUICONTEXT->openActivity("musicActivity");
-//	}
-//		break;
-//	case 7:{
-//	    LOGD(" ButtonClick VideoButton !!!\n");
-//		if (lk::is_connected()) {
-//			mlinkTipsWindowPtr->showWnd();
-//			break;
-//		}
-//	    EASYUICONTEXT->openActivity("videoActivity");
-//	}
-//		break;
-//	case 8: {
-//		LOGD(" ButtonClick PhotoAlbum !!!\n");
-//		if (lk::is_connected()) {
-//			mlinkTipsWindowPtr->showWnd();
-//			break;
-//		}
-//		EASYUICONTEXT->openActivity("PhotoAlbumActivity");
-//	}
-//		break;
-//	case 9:
-//	    LOGD(" ButtonClick setting !!!\n");
-//	    EASYUICONTEXT->openActivity("setshowActivity");
-//		break;
-////	case 10:
-////	    LOGD(" ButtonClick FM !!!\n");
-////	    EASYUICONTEXT->openActivity("FMemitActivity");
-////		break;
-////	case 11:
-////		LOGD(" ButtonClick Tire !!!\n");
-////		EASYUICONTEXT->openActivity("tirePressureActivity");
-////		break;
-////	case 12:
-////	    LOGD(" ButtonClick CLButton !!!\n");
-////	    open_link_activity(E_LINK_MODE_CARLIFE);
-////		break;
-//	default: break;
-//	}
-//}
+
 static void onProgressChanged_PlayVolSeekBar(ZKSeekBar *pSeekBar, int progress) {
     //LOGD(" ProgressChanged PlayVolSeekBar %d !!!\n", progress);
 }

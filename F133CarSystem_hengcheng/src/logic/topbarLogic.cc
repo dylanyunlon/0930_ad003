@@ -20,6 +20,8 @@
 #define WIFIMANAGER			NETMANAGER->getWifiManager()
 
 extern bool handle_main_page_back();
+extern bool _is_transitioning_from_activity;
+extern void set_activity_transition_flag(bool flag);
 
 REGISTER_SYSAPP(APP_TYPE_SYS_TOPBAR, topbarActivity);
 static bt_cb_t _s_bt_cb;
@@ -386,6 +388,17 @@ static bool onButtonClick_sys_home(ZKButton *pButton) {
 
     const char *app = EASYUICONTEXT->currentAppName();
 
+    // **新增：检查当前是否在需要延时的Activity中**
+    bool should_delay_transition = false;
+    if (app) {
+        if (strcmp(app, "videoActivity") == 0 ||
+            strcmp(app, "musicActivity") == 0 ||
+            strcmp(app, "PhotoAlbumActivity") == 0 ||
+            strcmp(app, "btMusicActivity") == 0) {
+            should_delay_transition = true;
+            LOGD("[topbar] Home from %s - will use delayed transition", app);
+        }
+    }
 
     if (app && (strcmp(app, "mainActivity") == 0)) {
         
@@ -395,6 +408,11 @@ static bool onButtonClick_sys_home(ZKButton *pButton) {
             LOGD("Home button: already on main page (page 0) in mainActivity");
         }
     } else {
+        // **新增：设置过渡标记**
+        if (should_delay_transition) {
+//            _is_transitioning_from_activity = true;
+            set_activity_transition_flag(true);
+        }
         
         EASYUICONTEXT->openActivity("mainActivity");
         LOGD("Home button: opened mainActivity");
@@ -411,29 +429,50 @@ static bool onButtonClick_sys_home(ZKButton *pButton) {
 
 static bool onButtonClick_backButton(ZKButton *pButton) {
     LOGD(" ButtonClick backButton !!!\n");
-	const char *app = EASYUICONTEXT->currentAppName();
-	if (sys::setting::get_navibar_show()) {
-		fold_statusbar();
-		return false;
-	}
+    const char *app = EASYUICONTEXT->currentAppName();
+
+    if (sys::setting::get_navibar_show()) {
+        fold_statusbar();
+        return false;
+    }
+
+    // **新增：检查是否从videoActivity或其他媒体Activity返回**
+    bool should_delay_transition = false;
+    if (app) {
+        if (strcmp(app, "videoActivity") == 0 ||
+            strcmp(app, "musicActivity") == 0 ||
+            strcmp(app, "PhotoAlbumActivity") == 0 ||
+            strcmp(app, "btMusicActivity") == 0) {
+            should_delay_transition = true;
+            LOGD("[topbar] Returning from %s - will use delayed transition", app);
+        }
+    }
+
     switch (mode::get_switch_mode()) {
-    	case E_SWITCH_MODE_NULL:
-    		if (app && (strcmp(app, "desktopActivity") == 0)) {
-    			break;
-    		}
-    		
-    		if (app && (strcmp(app, "mainActivity") == 0)) {
-    			if (handle_main_page_back()) {
-    				LOGD("Page back handled in mainActivity");
-    				break; 
-    			}
-    		}
-    		EASYUICONTEXT->goBack();
-    		break;
-    	case E_SWITCH_MODE_GOBACK:
-    		mode::set_event_mode(E_EVENT_MODE_GOBACK);
-    		break;
-    	}
+        case E_SWITCH_MODE_NULL:
+            if (app && (strcmp(app, "desktopActivity") == 0)) {
+                break;
+            }
+
+            if (app && (strcmp(app, "mainActivity") == 0)) {
+                if (handle_main_page_back()) {
+                    LOGD("Page back handled in mainActivity");
+                    break;
+                }
+            }
+
+            // **新增：设置过渡标记**
+            if (should_delay_transition) {
+//                _is_transitioning_from_activity = true;
+                set_activity_transition_flag(true);
+            }
+
+            EASYUICONTEXT->goBack();
+            break;
+        case E_SWITCH_MODE_GOBACK:
+            mode::set_event_mode(E_EVENT_MODE_GOBACK);
+            break;
+    }
     return false;
 }
 
@@ -457,15 +496,5 @@ static bool onButtonClick_NetButton(ZKButton *pButton) {
 }
 static bool onButtonClick_usb1Button(ZKButton *pButton) {
     LOGD(" ButtonClick usb1Button !!!\n");
-    return false;
-}
-
-static bool onButtonClick_Button1(ZKButton *pButton) {
-    LOGD(" ButtonClick Button1 !!!\n");
-    return false;
-}
-
-static bool onButtonClick_Button2(ZKButton *pButton) {
-    LOGD(" ButtonClick Button2 !!!\n");
     return false;
 }

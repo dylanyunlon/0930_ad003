@@ -102,7 +102,7 @@ static void _scan_cb(const char *file, void *user_data) {
 
 	// video file
 	const char *video_suffix_tab[] = {
-		"mp4", "mkv", "avi", "mov", "flv", "ts", "3gp", "vob", "3g2", "3gpp", "asf", "mpeg", "mpg", "rm", "rmvb", "wmv", NULL
+		"mp4", "avi", "mov", "flv", "ts", "3gp", "vob", "3g2", "3gpp", "asf", "mpeg", "mpg", "rm", "rmvb", "wmv", NULL
 	};
 
 	if (_is_match_suffix(suffix, video_suffix_tab)) {

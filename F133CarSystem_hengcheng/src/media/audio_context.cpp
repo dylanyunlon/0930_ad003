@@ -32,9 +32,6 @@ static audio_source_e _s_audio_source = E_AUDIO_SOURCE_NULL;
 static audio_player_mode_e _s_audio_output_mode = E_AUDIO_PLAYER_MODE_SPK;
 static std::set<audio_output_mode_cb> _s_audio_output_mode_cb_set;
 
-// 新增：通话前的音频类型记录
-static audio_type_e _s_audio_type_before_call = E_AUDIO_TYPE_NULL;
-
 typedef struct {
 	audio_type_e type;			  // 音频类型
 	bool playing;				  // 保存切换声音类型时的播放状态
@@ -190,36 +187,10 @@ void change_audio_type(audio_type_e type) {
 	}
 
 	LOGD("change audio type: %d\n", type);
-
-	// 新增：对于蓝牙音乐和视频之间的切换，需要特殊处理
-	if ((_s_audio_type == E_AUDIO_TYPE_BT_MUSIC || type == E_AUDIO_TYPE_BT_MUSIC) &&
-		(_s_audio_type == E_AUDIO_TYPE_VIDEO || type == E_AUDIO_TYPE_VIDEO)) {
-
-		// 如果从蓝牙音乐切换到视频，确保蓝牙音乐保持播放状态（手机端继续播放）
-		if (_s_audio_type == E_AUDIO_TYPE_BT_MUSIC && type == E_AUDIO_TYPE_VIDEO) {
-			LOGD("Switching from BT music to video, BT music continues on phone\n");
-			// 不暂停蓝牙音乐，让它在手机端继续播放
-		}
-		// 如果从视频切换回蓝牙音乐，检查蓝牙音乐是否还在播放
-		else if (_s_audio_type == E_AUDIO_TYPE_VIDEO && type == E_AUDIO_TYPE_BT_MUSIC) {
-			LOGD("Switching from video to BT music, checking BT music status\n");
-			// 检查蓝牙音乐是否还在播放，如果没有则不切换音频源
-			if (!bt::music_is_playing()) {
-				LOGD("BT music is not playing, not switching audio source\n");
-				return;
-			}
-		}
-	}
-
 	_s_audio_type = type;
 
 	for (size_t i = 0; i < TAB_SIZE(_s_audio_controller_tab); ++i) {
 		if (_is_same_module(_s_audio_controller_tab[i].type, type)) {
-			continue;
-		}
-
-		// 修改：对于蓝牙音乐，如果正在播放视频，不暂停蓝牙音乐
-		if (_s_audio_controller_tab[i].type == E_AUDIO_TYPE_BT_MUSIC && type == E_AUDIO_TYPE_VIDEO) {
 			continue;
 		}
 
@@ -258,56 +229,33 @@ void handle_phone(audio_type_e type, bool phoning) {
 		break;
 	}
 
-	// 新增：记录通话前的音频类型
-	if (phoning) {
-		_s_audio_type_before_call = _s_audio_type;
-		LOGD("Saving audio type before call: %d\n", _s_audio_type_before_call);
-	}
-
 	for (size_t i = 0; i < TAB_SIZE(_s_audio_controller_tab); ++i) {
 		// 相同模块下不处理音频逻辑，由模块内部处理好
 		if (_is_same_module(_s_audio_controller_tab[i].type, type)) {
 			continue;
 		}
-
+//		LOGD("--%d-- --%s-- --%s-- i:%d \n", __LINE__, __FILE__, __FUNCTION__, i);
 		if (phoning) {
 			// 记录通话前的状态
 			if (_s_audio_controller_tab[i].is_playing()) {
-				// 修改：对于蓝牙音乐，不暂停播放，让它在手机端继续
-				if (_s_audio_controller_tab[i].type == E_AUDIO_TYPE_BT_MUSIC) {
-					_s_audio_controller_tab[i].playing = true;
-					LOGD("BT music continues playing on phone during call\n");
-				} else {
-					_s_audio_controller_tab[i].pause();
-					_s_audio_controller_tab[i].playing = true;
-				}
+				_s_audio_controller_tab[i].pause();
+				_s_audio_controller_tab[i].playing = true;
+//				if (type != E_AUDIO_TYPE_BT_PHONE) {		// 蓝牙通话  本地音视频不恢复
+//					_s_audio_controller_tab[i].playing = true;
+//				}
 			}
 		} else {
 			// 恢复通话前的状态
 			if (_s_audio_controller_tab[i].playing) {
-				// 修改：通话结束后的恢复逻辑
-				if (_s_audio_controller_tab[i].type == E_AUDIO_TYPE_BT_MUSIC) {
-					// 检查蓝牙音乐是否还在播放且通话前是蓝牙音乐
-					if (bt::music_is_playing() && _s_audio_type_before_call == E_AUDIO_TYPE_BT_MUSIC) {
-						LOGD("Restoring BT music after call\n");
-						_s_audio_controller_tab[i].resume();
-						// 确保音频源切换到蓝牙音乐
-						change_audio_type(E_AUDIO_TYPE_BT_MUSIC);
-					}
-				} else {
-					// 其他音频源正常恢复
-					_s_audio_controller_tab[i].resume();
-				}
+				_s_audio_controller_tab[i].resume();
 				_s_audio_controller_tab[i].playing = false;
 			}
 		}
 	}
-
-	DELAY(150);
+	DELAY(500);
 	LOGD("--%d-- --%s-- vol:%.1f \n", __LINE__, __FILE__, vol);
 	if (vol >= 0) {
 		// arm静音
-		LOGE("[audio] lk::get_lylink_type() = %d", lk::get_lylink_type());
 		if (lk::get_lylink_type() == LINK_TYPE_WIFICP) {
 			_set_arm_vol(0);
 		} else {
@@ -323,24 +271,13 @@ void handle_phone(audio_type_e type, bool phoning) {
 #if BT_MODULE == BT_MODULE_LYGOC
 		if (type == E_AUDIO_TYPE_BT_PHONE && phoning) { bt::call_vol(_s_lylink_call_vol); }
 #endif
-		if (type == E_AUDIO_TYPE_BT_PHONE && !phoning){
-			_set_system_vol_imp(vol);
-		}else if(type == E_AUDIO_TYPE_LYLINK_PHONE){
-			_set_system_vol_imp(vol);
-		}
+		_set_system_vol_imp(vol);
 		DELAY(150);
 		_set_arm_vol(1.0);
 #else
 		DELAY(150);
 		_set_system_vol_imp(vol);
 #endif
-	}
-
-	// 新增：通话结束后，如果需要恢复蓝牙音乐，确保音频路径正确
-	if (!phoning && _s_audio_type_before_call == E_AUDIO_TYPE_BT_MUSIC && bt::music_is_playing()) {
-		DELAY(200);  // 给系统一点时间完成音量设置
-		bt::set_bt_mute(false, false);  // 确保蓝牙不是静音状态
-		LOGD("Ensured BT audio path after call ended\n");
 	}
 }
 
